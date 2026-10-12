@@ -1,106 +1,270 @@
 local Players = game:GetService("Players")
-local RunService = game:GetService("RunService")
 local UIS = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
 
 local LocalPlayer = Players.LocalPlayer
 
+-- CONFIGURAÇÕES
 local LOCK_KEY = Enum.KeyCode.E
 local MAX_DISTANCE = 800
-local ROTATION_SPEED = 35
+local ROTATION_SPEED = 28
+local PREDICTION = 0.035
+local MAX_PREDICTION = 1.5
 
-local enabled = false
+local locked = false
 local target = nil
+local highlight = nil
+local oldAutoRotate = nil
 
-local function getRoot(player)
-    local character = player.Character
-    if not character then return nil end
-
-    local humanoid = character:FindFirstChildOfClass("Humanoid")
-    local root = character:FindFirstChild("HumanoidRootPart")
-
-    if not humanoid or not root then return nil end
-    if humanoid.Health <= 0 then return nil end
-
-    return root
+-- LIMPAR MARCADOR
+local function removeMarker()
+    if highlight then
+        highlight:Destroy()
+        highlight = nil
+    end
 end
 
-local function getNearestTarget()
-    local myRoot = getRoot(LocalPlayer)
-    if not myRoot then return nil end
+-- CRIAR MARCADOR
+local function createMarker(character)
+    removeMarker()
 
-    local nearest = nil
-    local shortest = MAX_DISTANCE
+    if not character then return end
+
+    highlight = Instance.new("Highlight")
+    highlight.Name = "AimLockMarker"
+    highlight.Adornee = character
+    highlight.FillColor = Color3.fromRGB(255, 60, 60)
+    highlight.OutlineColor = Color3.fromRGB(255, 255, 255)
+    highlight.FillTransparency = 0.75
+    highlight.OutlineTransparency = 0
+    highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+    highlight.Parent = character
+end
+
+-- VALIDAR ALVO
+local function validTarget(character)
+    if not character or not character.Parent then
+        return false
+    end
+
+    local root = character:FindFirstChild("HumanoidRootPart")
+    local humanoid = character:FindFirstChildOfClass("Humanoid")
+
+    return root ~= nil
+        and humanoid ~= nil
+        and humanoid.Health > 0
+end
+
+-- PROCURAR JOGADOR MAIS PRÓXIMO
+local function getClosestTarget()
+    local character = LocalPlayer.Character
+    local root = character and
+        character:FindFirstChild("HumanoidRootPart")
+
+    if not root then return nil end
+
+    local closest = nil
+    local closestDistance = MAX_DISTANCE
 
     for _, player in ipairs(Players:GetPlayers()) do
         if player ~= LocalPlayer then
-            local root = getRoot(player)
+            local enemy = player.Character
 
-            if root then
+            if validTarget(enemy) then
+                local enemyRoot =
+                    enemy:FindFirstChild("HumanoidRootPart")
+
                 local distance =
-                    (root.Position - myRoot.Position).Magnitude
+                    (enemyRoot.Position - root.Position).Magnitude
 
-                if distance < shortest then
-                    shortest = distance
-                    nearest = player
+                if distance < closestDistance then
+                    closestDistance = distance
+                    closest = enemy
                 end
             end
         end
     end
 
-    return nearest
+    return closest
 end
 
-UIS.InputBegan:Connect(function(input, processed)
-    if processed then return end
+-- ATUALIZAR ALVO
+local function updateTarget()
+    local newTarget = getClosestTarget()
 
-    if input.KeyCode == LOCK_KEY then
-        enabled = not enabled
+    if newTarget ~= target then
+        target = newTarget
 
-        if enabled then
-            target = getNearestTarget()
-            if not target then
-                enabled = false
-            end
+        if target then
+            createMarker(target)
+            print("AimLock alvo:", target.Name)
         else
-            target = nil
+            removeMarker()
         end
     end
-end)
+end
 
-RunService.RenderStepped:Connect(function(dt)
-    if not enabled then return end
+-- ATIVAR AIMLOCK
+local function enableLock()
+    if locked then return end
 
-    local myRoot = getRoot(LocalPlayer)
-    local targetRoot = target and getRoot(target)
+    local character = LocalPlayer.Character
+    local humanoid = character and
+        character:FindFirstChildOfClass("Humanoid")
 
-    if not myRoot or not targetRoot then
-        enabled = false
-        target = nil
+    if not humanoid then
+        warn("AimLock: personagem não encontrado")
         return
     end
 
-    local direction = targetRoot.Position - myRoot.Position
+    oldAutoRotate = humanoid.AutoRotate
+    locked = true
 
-    direction = Vector3.new(
-        direction.X,
+    updateTarget()
+
+    if target then
+        humanoid.AutoRotate = false
+    end
+
+    print("AimLock ATIVADO")
+end
+
+-- DESATIVAR AIMLOCK
+local function disableLock()
+    locked = false
+    target = nil
+
+    removeMarker()
+
+    local character = LocalPlayer.Character
+    local humanoid = character and
+        character:FindFirstChildOfClass("Humanoid")
+
+    if humanoid and oldAutoRotate ~= nil then
+        humanoid.AutoRotate = oldAutoRotate
+    end
+
+    oldAutoRotate = nil
+
+    print("AimLock DESATIVADO")
+end
+
+-- CONTROLE PELA TECLA E
+UIS.InputBegan:Connect(function(input, processed)
+    if input.KeyCode ~= LOCK_KEY then
+        return
+    end
+
+    if UIS:GetFocusedTextBox() then
+        return
+    end
+
+    if locked then
+        disableLock()
+    else
+        enableLock()
+    end
+end)
+
+-- ACOMPANHAMENTO
+local searchTimer = 0
+
+RunService.RenderStepped:Connect(function(dt)
+    if not locked then return end
+
+    local character = LocalPlayer.Character
+    local root = character and
+        character:FindFirstChild("HumanoidRootPart")
+
+    local humanoid = character and
+        character:FindFirstChildOfClass("Humanoid")
+
+    if not root or not humanoid or humanoid.Health <= 0 then
+        return
+    end
+
+    -- PROCURAR ALVO PERIODICAMENTE
+    searchTimer = searchTimer + dt
+
+    if searchTimer >= 0.2 then
+        searchTimer = 0
+
+        if not validTarget(target) then
+            updateTarget()
+        end
+    end
+
+    -- CONTINUAR ATIVO MESMO SEM ALVO
+    if not validTarget(target) then
+        humanoid.AutoRotate =
+            oldAutoRotate ~= nil and oldAutoRotate or true
+        return
+    end
+
+    local enemyRoot =
+        target:FindFirstChild("HumanoidRootPart")
+
+    if not enemyRoot then return end
+
+    local distance =
+        (enemyRoot.Position - root.Position).Magnitude
+
+    if distance > MAX_DISTANCE then
+        target = nil
+        removeMarker()
+        return
+    end
+
+    humanoid.AutoRotate = false
+
+    -- PREVISÃO DE MOVIMENTO MELHORADA
+    local velocity = enemyRoot.AssemblyLinearVelocity
+
+    local horizontalVelocity = Vector3.new(
+        velocity.X,
         0,
-        direction.Z
+        velocity.Z
     )
 
-    if direction.Magnitude < 0.05 then return end
+    local offset = horizontalVelocity * PREDICTION
 
-    local desired = CFrame.lookAt(
-        myRoot.Position,
-        myRoot.Position + direction.Unit
+    if offset.Magnitude > MAX_PREDICTION then
+        offset = offset.Unit * MAX_PREDICTION
+    end
+
+    local predictedPosition = enemyRoot.Position + offset
+
+    -- DIREÇÃO HORIZONTAL PRECISA
+    local direction = Vector3.new(
+        predictedPosition.X - root.Position.X,
+        0,
+        predictedPosition.Z - root.Position.Z
+    )
+
+    if direction.Magnitude <= 0.01 then
+        return
+    end
+
+    local desiredCFrame = CFrame.lookAt(
+        root.Position,
+        root.Position + direction.Unit
     )
 
     local alpha = 1 - math.exp(-ROTATION_SPEED * dt)
 
-    local currentRotation = myRoot.CFrame.Rotation
-    local newRotation = currentRotation:Lerp(
-        desired.Rotation,
+    root.CFrame = root.CFrame:Lerp(
+        desiredCFrame,
         alpha
     )
-
-    myRoot.CFrame = CFrame.new(myRoot.Position) * newRotation
 end)
+
+-- RESPAWN
+LocalPlayer.CharacterAdded:Connect(function()
+    target = nil
+    removeMarker()
+    oldAutoRotate = nil
+    locked = false
+    searchTimer = 0
+end)
+
+print("AimLock V3 Melhorado carregado! Pressione E.")
